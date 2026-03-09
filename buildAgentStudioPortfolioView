@@ -1,0 +1,354 @@
+map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_projects_text, string include_activity_text, string max_events_per_project_text, string project_status_filter_text, string project_type_filter_text)
+{
+	result = Map();
+	window = Map();
+	limits = Map();
+	source_stats = Map();
+	active_projects = List();
+
+	start_index = 1;
+	max_projects = 200;
+	if(start_index_text != null)
+	{
+		try
+		{
+			start_index = start_index_text.toLong();
+		}
+		catch (ignore_start)
+		{
+			start_index = 1;
+		}
+	}
+	if(max_projects_text != null)
+	{
+		try
+		{
+			max_projects = max_projects_text.toLong();
+		}
+		catch (ignore_max)
+		{
+			max_projects = 200;
+		}
+	}
+	if(start_index < 1)
+	{
+		start_index = 1;
+	}
+	if(max_projects < 1)
+	{
+		max_projects = 1;
+	}
+	if(max_projects > 500)
+	{
+		max_projects = 500;
+	}
+
+	status_filter_tokens = List();
+	type_filter_tokens = List();
+	status_filter_lc = ifnull(project_status_filter_text,"").toString().toLowerCase().trim();
+	type_filter_lc = ifnull(project_type_filter_text,"").toString().toLowerCase().trim();
+	if(status_filter_lc != "")
+	{
+		for each  s in status_filter_lc.toList(",")
+		{
+			s_trim = ifnull(s,"").toString().trim();
+			if(s_trim != "")
+			{
+				status_filter_tokens.add(s_trim);
+			}
+		}
+	}
+	if(type_filter_lc != "")
+	{
+		for each  t in type_filter_lc.toList(",")
+		{
+			t_trim = ifnull(t,"").toString().trim();
+			if(t_trim != "")
+			{
+				type_filter_tokens.add(t_trim);
+			}
+		}
+	}
+
+	portal_id = "7004368649";
+	dc_base = "https://projectsapi.zoho.com.au/restapi";
+	projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
+	page_size = 100;
+	page_markers_text = "x".leftpad(200);
+	page_markers_text = page_markers_text.replaceAll(" ",",x");
+	page_markers = page_markers_text.toList(",");
+
+	projects_api_errors = List();
+	projects_request_summary = List();
+	project_pages = 0;
+	projects_fetched = 0;
+	projects_excluded_by_status = 0;
+	projects_excluded_onboarding = 0;
+	projects_excluded_non_agent = 0;
+	projects_excluded_by_input_status_filter = 0;
+	projects_excluded_by_input_type_filter = 0;
+	candidates = List();
+	done = false;
+
+	for each index page_no in page_markers
+	{
+		if(done == true)
+		{
+			break;
+		}
+		start_page_index = page_no * page_size + 1;
+		resp = Map();
+		project_list = List();
+		try
+		{
+			resp = invokeurl
+			[
+				url :projects_base_url
+				type :GET
+				parameters:{"index":start_page_index,"range":page_size}
+				connection:"zoho_project_connection"
+			];
+			if(projects_request_summary.size() < 5)
+			{
+				projects_request_summary.add("GET /projects/ index=" + start_page_index + " range=" + page_size);
+			}
+		}
+		catch (projects_fetch_err)
+		{
+			err = Map();
+			err.put("stage","projects_fetch");
+			err.put("index",start_page_index);
+			err.put("message",projects_fetch_err.toString());
+			projects_api_errors.add(err);
+			done = true;
+		}
+
+		if(done == false)
+		{
+			projects_key_found = false;
+			if(resp != null)
+			{
+				try
+				{
+					if(resp.containsKey("projects"))
+					{
+						projects_key_found = true;
+					}
+				}
+				catch (ignore_projects_key)
+				{
+					projects_key_found = false;
+				}
+			}
+			if(projects_key_found == true)
+			{
+				projects_any = resp.get("projects");
+				if(projects_any != null)
+				{
+					project_list = projects_any;
+				}
+			}
+			else
+			{
+				err2 = Map();
+				err2.put("stage","projects_parse");
+				err2.put("index",start_page_index);
+				err2.put("message","projects key missing in response or response not map");
+				projects_api_errors.add(err2);
+				done = true;
+			}
+		}
+
+		project_pages = project_pages + 1;
+		projects_fetched = projects_fetched + project_list.size();
+
+		for each  project_rec in project_list
+		{
+			if(project_rec == null)
+			{
+				continue;
+			}
+			project_id = ifnull(project_rec.get("id"),"").toString();
+			project_name = ifnull(project_rec.get("name"),"").toString();
+			project_status = ifnull(project_rec.get("status"),"").toString();
+			project_owner = ifnull(project_rec.get("owner_name"),"").toString();
+			project_updated_date = ifnull(project_rec.get("updated_date"),"").toString();
+			implementation_type = "";
+			include_project = true;
+			excluded_by_onboarding = false;
+
+			status_lc = project_status.toLowerCase();
+			if(status_lc == "archived" || status_lc == "closed" || status_lc == "inactive" || status_lc == "completed" || status_lc == "cancelled" || status_lc == "to do" || status_lc == "pipeline")
+			{
+				include_project = false;
+				projects_excluded_by_status = projects_excluded_by_status + 1;
+			}
+
+			if(project_rec.containsKey("custom_fields"))
+			{
+				custom_fields_any = project_rec.get("custom_fields");
+				if(custom_fields_any != null)
+				{
+					for each  field_rec in custom_fields_any
+					{
+						if(field_rec == null)
+						{
+							continue;
+						}
+						field_label = ifnull(field_rec.get("label_name"),"").toString();
+						if(field_label == "Implementation Type")
+						{
+							field_value_text = ifnull(field_rec.get("value"),"").toString();
+							implementation_type = field_value_text;
+							if(field_value_text.toLowerCase().contains("onboarding"))
+							{
+								include_project = false;
+								excluded_by_onboarding = true;
+							}
+						}
+					}
+				}
+			}
+
+			if(include_project == true && status_filter_tokens.size() > 0)
+			{
+				status_filter_match = false;
+				for each  st in status_filter_tokens
+				{
+					if(status_lc == st || status_lc.contains(st))
+					{
+						status_filter_match = true;
+						break;
+					}
+				}
+				if(status_filter_match == false)
+				{
+					include_project = false;
+					projects_excluded_by_input_status_filter = projects_excluded_by_input_status_filter + 1;
+				}
+			}
+
+			if(include_project == true && type_filter_tokens.size() > 0)
+			{
+				impl_lc = implementation_type.toLowerCase();
+				type_filter_match = false;
+				for each  tt in type_filter_tokens
+				{
+					if(impl_lc.contains(tt))
+					{
+						type_filter_match = true;
+						break;
+					}
+				}
+				if(type_filter_match == false)
+				{
+					include_project = false;
+					projects_excluded_by_input_type_filter = projects_excluded_by_input_type_filter + 1;
+				}
+			}
+
+			if(include_project == true)
+			{
+				if(implementation_type.toLowerCase().contains("agent studio"))
+				{
+					item = Map();
+					item.put("project_id",project_id);
+					item.put("project_name",project_name);
+					item.put("status",project_status);
+					item.put("owner",project_owner);
+					item.put("updated_date",project_updated_date);
+					item.put("updated_time_long",ifnull(project_rec.get("updated_time_long"),"0"));
+					item.put("updated_date_long",ifnull(project_rec.get("updated_date_long"),"0"));
+					item.put("implementation_type",implementation_type);
+					candidates.add(item);
+				}
+				else
+				{
+					projects_excluded_non_agent = projects_excluded_non_agent + 1;
+				}
+			}
+			else
+			{
+				if(excluded_by_onboarding == true)
+				{
+					projects_excluded_onboarding = projects_excluded_onboarding + 1;
+				}
+			}
+		}
+
+		if(project_list.size() < page_size)
+		{
+			done = true;
+		}
+	}
+
+	total_projects = candidates.size();
+	current_index = 1;
+	processed = 0;
+	for each  c in candidates
+	{
+		if(current_index < start_index)
+		{
+			current_index = current_index + 1;
+			continue;
+		}
+		if(processed >= max_projects)
+		{
+			break;
+		}
+		active_projects.add(c);
+		processed = processed + 1;
+		current_index = current_index + 1;
+	}
+
+	window_start_index = start_index;
+	window_end_index = start_index + processed - 1;
+	if(processed == 0)
+	{
+		window_end_index = 0;
+	}
+	next_index = start_index + processed;
+	has_more = false;
+	if(next_index <= total_projects)
+	{
+		has_more = true;
+	}
+	else
+	{
+		next_index = 0;
+	}
+	window.put("start_index",window_start_index);
+	window.put("end_index",window_end_index);
+	window.put("processed",processed);
+	window.put("requested",max_projects);
+	window.put("total_projects",total_projects);
+	window.put("has_more",has_more);
+	window.put("next_index",next_index);
+
+	limits.put("max_projects",max_projects);
+	limits.put("project_status_filter",project_status_filter_text);
+	limits.put("project_type_filter",project_type_filter_text);
+	limits.put("include_activity",include_activity_text);
+	limits.put("max_events_per_project",max_events_per_project_text);
+
+	source_stats.put("project_pages",project_pages);
+	source_stats.put("projects_fetched",projects_fetched);
+	source_stats.put("active_projects_total",total_projects);
+	source_stats.put("projects_excluded_by_status",projects_excluded_by_status);
+	source_stats.put("projects_excluded_onboarding",projects_excluded_onboarding);
+	source_stats.put("projects_excluded_non_agent",projects_excluded_non_agent);
+	source_stats.put("projects_excluded_by_input_status_filter",projects_excluded_by_input_status_filter);
+	source_stats.put("projects_excluded_by_input_type_filter",projects_excluded_by_input_type_filter);
+	source_stats.put("api_error_count",projects_api_errors.size());
+	source_stats.put("request_summary",projects_request_summary);
+	if(projects_api_errors.size() > 0)
+	{
+		source_stats.put("first_api_error",projects_api_errors.get(0));
+	}
+
+	result.put("window",window);
+	result.put("limits",limits);
+	result.put("source_stats",source_stats);
+	result.put("active_projects",active_projects);
+	return result;
+}

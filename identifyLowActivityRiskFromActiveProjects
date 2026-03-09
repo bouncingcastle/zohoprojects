@@ -1,0 +1,265 @@
+map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_days_text, string overdue_threshold_text)
+{
+	result = Map();
+	flagged_projects = List();
+	stats = Map();
+	api_errors = List();
+
+	active_projects = List();
+	if(base_data != null && base_data.containsKey("active_projects"))
+	{
+		active_projects = ifnull(base_data.get("active_projects"),List());
+	}
+
+	inactivity_days = 7;
+	overdue_threshold = 1;
+	if(inactivity_days_text != null)
+	{
+		try
+		{
+			inactivity_days = inactivity_days_text.toLong();
+		}
+		catch (ignore_inactivity)
+		{
+			inactivity_days = 7;
+		}
+	}
+	if(overdue_threshold_text != null)
+	{
+		try
+		{
+			overdue_threshold = overdue_threshold_text.toLong();
+		}
+		catch (ignore_overdue_threshold)
+		{
+			overdue_threshold = 1;
+		}
+	}
+	if(inactivity_days < 1)
+	{
+		inactivity_days = 1;
+	}
+	if(overdue_threshold < 0)
+	{
+		overdue_threshold = 0;
+	}
+
+	portal_id = "7004368649";
+	dc_base = "https://projectsapi.zoho.com.au/restapi";
+	projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
+	now_ms = zoho.currenttime.toLong();
+
+	projects_scanned = 0;
+	flagged_count = 0;
+	low_activity_count = 0;
+	overdue_risk_count = 0;
+
+	for each  p in active_projects
+	{
+		if(p == null)
+		{
+			continue;
+		}
+		projects_scanned = projects_scanned + 1;
+		project_id = "";
+		project_name = "";
+		project_owner = "";
+		try { project_id = ifnull(p.get("project_id"),"").toString(); } catch (ignore_pid) { project_id = ""; }
+		try { project_name = ifnull(p.get("project_name"),"").toString(); } catch (ignore_pname) { project_name = ""; }
+		try { project_owner = ifnull(p.get("owner"),"").toString(); } catch (ignore_powner) { project_owner = ""; }
+
+		tasks = List();
+		bugs = List();
+		try
+		{
+			tasks_resp = invokeurl
+			[
+				url :projects_base_url + project_id + "/tasks/"
+				type :GET
+				parameters:{"range":"200","index":"1"}
+				connection:"zoho_project_connection"
+			];
+			if(tasks_resp != null && tasks_resp.containsKey("tasks"))
+			{
+				tasks = ifnull(tasks_resp.get("tasks"),List());
+			}
+		}
+		catch (task_fetch_err)
+		{
+			err_t = Map();
+			err_t.put("stage","tasks_fetch");
+			err_t.put("project_id",project_id);
+			err_t.put("message",task_fetch_err.toString());
+			api_errors.add(err_t);
+		}
+		try
+		{
+			bugs_resp = invokeurl
+			[
+				url :projects_base_url + project_id + "/bugs/"
+				type :GET
+				parameters:{"range":"200","index":"1"}
+				connection:"zoho_project_connection"
+			];
+			if(bugs_resp != null && bugs_resp.containsKey("bugs"))
+			{
+				bugs = ifnull(bugs_resp.get("bugs"),List());
+			}
+		}
+		catch (bug_fetch_err)
+		{
+			err_b = Map();
+			err_b.put("stage","bugs_fetch");
+			err_b.put("project_id",project_id);
+			err_b.put("message",bug_fetch_err.toString());
+			api_errors.add(err_b);
+		}
+
+		overdue_tasks = 0;
+		latest_activity_ms = 0;
+
+		project_updated_ms = 0;
+		if(p.containsKey("updated_time_long"))
+		{
+			try { project_updated_ms = ifnull(p.get("updated_time_long"),"0").toString().toLong(); } catch (ignore_project_updated) { project_updated_ms = 0; }
+		}
+		if(project_updated_ms == 0 && p.containsKey("updated_date_long"))
+		{
+			try { project_updated_ms = ifnull(p.get("updated_date_long"),"0").toString().toLong(); } catch (ignore_project_updated2) { project_updated_ms = 0; }
+		}
+		if(project_updated_ms > 0)
+		{
+			if(project_updated_ms.toString().length() <= 10)
+			{
+				project_updated_ms = project_updated_ms * 1000;
+			}
+			latest_activity_ms = project_updated_ms;
+		}
+
+		for each  task in tasks
+		{
+			if(task == null)
+			{
+				continue;
+			}
+			status_lc = "";
+			try { status_lc = ifnull(task.get("status"),"").toString().toLowerCase(); } catch (ignore_status) { status_lc = ""; }
+			is_closed = false;
+			if(status_lc.contains("closed") || status_lc == "completed")
+			{
+				is_closed = true;
+			}
+
+			due_ms = 0;
+			if(task.containsKey("due_date_long"))
+			{
+				try { due_ms = ifnull(task.get("due_date_long"),"0").toString().toLong(); } catch (ignore_due) { due_ms = 0; }
+			}
+			if(due_ms > 0 && due_ms.toString().length() <= 10)
+			{
+				due_ms = due_ms * 1000;
+			}
+			if(is_closed == false && due_ms > 0 && due_ms < now_ms)
+			{
+				overdue_tasks = overdue_tasks + 1;
+			}
+
+			task_ms = 0;
+			if(task.containsKey("last_updated_time_long"))
+			{
+				try { task_ms = ifnull(task.get("last_updated_time_long"),"0").toString().toLong(); } catch (ignore_task_ms1) { task_ms = 0; }
+			}
+			if(task_ms == 0 && task.containsKey("updated_time_long"))
+			{
+				try { task_ms = ifnull(task.get("updated_time_long"),"0").toString().toLong(); } catch (ignore_task_ms2) { task_ms = 0; }
+			}
+			if(task_ms > 0)
+			{
+				if(task_ms.toString().length() <= 10)
+				{
+					task_ms = task_ms * 1000;
+				}
+				if(task_ms > latest_activity_ms)
+				{
+					latest_activity_ms = task_ms;
+				}
+			}
+		}
+
+		for each  bug in bugs
+		{
+			if(bug == null)
+			{
+				continue;
+			}
+			bug_ms = 0;
+			if(bug.containsKey("last_updated_time_long"))
+			{
+				try { bug_ms = ifnull(bug.get("last_updated_time_long"),"0").toString().toLong(); } catch (ignore_bug_ms1) { bug_ms = 0; }
+			}
+			if(bug_ms == 0 && bug.containsKey("updated_time_long"))
+			{
+				try { bug_ms = ifnull(bug.get("updated_time_long"),"0").toString().toLong(); } catch (ignore_bug_ms2) { bug_ms = 0; }
+			}
+			if(bug_ms > 0)
+			{
+				if(bug_ms.toString().length() <= 10)
+				{
+					bug_ms = bug_ms * 1000;
+				}
+				if(bug_ms > latest_activity_ms)
+				{
+					latest_activity_ms = bug_ms;
+				}
+			}
+		}
+
+		days_since_activity = 9999;
+		if(latest_activity_ms > 0)
+		{
+			days_since_activity = ((now_ms - latest_activity_ms) / 86400000).toLong();
+		}
+
+		low_activity = false;
+		if(days_since_activity >= inactivity_days)
+		{
+			low_activity = true;
+			low_activity_count = low_activity_count + 1;
+		}
+
+		overdue_risk = false;
+		if(overdue_tasks >= overdue_threshold)
+		{
+			overdue_risk = true;
+			overdue_risk_count = overdue_risk_count + 1;
+		}
+
+		if(low_activity == true || overdue_risk == true)
+		{
+			flag = Map();
+			flag.put("project_id",project_id);
+			flag.put("project_name",project_name);
+			flag.put("owner",project_owner);
+			flag.put("days_since_activity",days_since_activity);
+			flag.put("overdue_tasks",overdue_tasks);
+			flag.put("low_activity_risk",low_activity);
+			flag.put("overdue_risk",overdue_risk);
+			flagged_projects.add(flag);
+			flagged_count = flagged_count + 1;
+		}
+	}
+
+	stats.put("projects_scanned",projects_scanned);
+	stats.put("flagged_count",flagged_count);
+	stats.put("low_activity_count",low_activity_count);
+	stats.put("overdue_risk_count",overdue_risk_count);
+	stats.put("inactivity_days_threshold",inactivity_days);
+	stats.put("overdue_tasks_threshold",overdue_threshold);
+	stats.put("api_error_count",api_errors.size());
+	stats.put("generated_at",zoho.currenttime.toString());
+
+	result.put("flagged_projects",flagged_projects);
+	result.put("stats",stats);
+	result.put("api_errors",api_errors);
+	return result;
+}

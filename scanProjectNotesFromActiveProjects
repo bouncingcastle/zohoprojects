@@ -1,0 +1,229 @@
+map scanProjectNotesFromActiveProjects(map base_data, string notes_today_only_text, string max_notes_per_project_text)
+{
+	result = Map();
+	notes = List();
+	stats = Map();
+	api_errors = List();
+
+	active_projects = List();
+	base_has_active_projects = false;
+	if(base_data != null)
+	{
+		try
+		{
+			if(base_data.containsKey("active_projects"))
+			{
+				base_has_active_projects = true;
+			}
+		}
+		catch (ignore_base_key)
+		{
+			base_has_active_projects = false;
+		}
+	}
+	if(base_has_active_projects == true)
+	{
+		active_projects = ifnull(base_data.get("active_projects"),List());
+	}
+
+	notes_today_only = true;
+	if(ifnull(notes_today_only_text,"true").toString().toLowerCase() == "false")
+	{
+		notes_today_only = false;
+	}
+	max_notes_per_project = 10;
+	if(max_notes_per_project_text != null)
+	{
+		try
+		{
+			max_notes_per_project = max_notes_per_project_text.toLong();
+		}
+		catch (ignore_max_notes)
+		{
+			max_notes_per_project = 10;
+		}
+	}
+	if(max_notes_per_project < 1)
+	{
+		max_notes_per_project = 1;
+	}
+	if(max_notes_per_project > 50)
+	{
+		max_notes_per_project = 50;
+	}
+
+	today_start_ms = 0;
+	try
+	{
+		if(zoho.currentdate != null)
+		{
+			today_start_ms = zoho.currentdate.toDateTime().toLong();
+		}
+		else
+		{
+			today_start_ms = zoho.currenttime.toLong() - 86400000;
+		}
+	}
+	catch (ignore_today_start)
+	{
+		today_start_ms = zoho.currenttime.toLong() - 86400000;
+	}
+
+	portal_id = "7004368649";
+	dc_base = "https://projectsapi.zoho.com.au/restapi";
+	projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
+
+	projects_scanned = 0;
+	projects_with_notes = 0;
+	notes_count = 0;
+
+	for each  p in active_projects
+	{
+		if(p == null)
+		{
+			continue;
+		}
+		projects_scanned = projects_scanned + 1;
+		project_id = "";
+		project_name = "";
+		try { project_id = ifnull(p.get("project_id"),"").toString(); } catch (ignore_pid) { project_id = ""; }
+		try { project_name = ifnull(p.get("project_name"),"").toString(); } catch (ignore_pname) { project_name = ""; }
+
+		tasks = List();
+		try
+		{
+			tasks_resp = invokeurl
+			[
+				url :projects_base_url + project_id + "/tasks/"
+				type :GET
+				parameters:{"range":"200","index":"1"}
+				connection:"zoho_project_connection"
+			];
+			tasks_key_found = false;
+			if(tasks_resp != null)
+			{
+				try
+				{
+					if(tasks_resp.containsKey("tasks"))
+					{
+						tasks_key_found = true;
+					}
+				}
+				catch (ignore_tasks_key)
+				{
+					tasks_key_found = false;
+				}
+			}
+			if(tasks_key_found == true)
+			{
+				tasks = ifnull(tasks_resp.get("tasks"),List());
+			}
+		}
+		catch (task_fetch_err)
+		{
+			err = Map();
+			err.put("stage","tasks_fetch");
+			err.put("project_id",project_id);
+			err.put("message",task_fetch_err.toString());
+			api_errors.add(err);
+		}
+
+		project_note_count = 0;
+		for each  task in tasks
+		{
+			if(task == null)
+			{
+				continue;
+			}
+
+			note_text = "";
+			try
+			{
+				note_text = "";
+				try { note_text = ifnull(task.get("description"),"").toString(); } catch (ignore_note1) { note_text = ""; }
+			}
+			catch (ignore_note1)
+			{
+				note_text = "";
+			}
+			if(note_text == "")
+			{
+				try { note_text = ifnull(task.get("notes"),"").toString(); } catch (ignore_note2) { note_text = ""; }
+			}
+			if(note_text == "")
+			{
+				try { note_text = ifnull(task.get("description_raw"),"").toString(); } catch (ignore_note3) { note_text = ""; }
+			}
+			if(note_text == "")
+			{
+				continue;
+			}
+
+			task_last_ms = 0;
+			if(task.containsKey("last_updated_time_long"))
+			{
+				try { task_last_ms = ifnull(task.get("last_updated_time_long"),"0").toString().toLong(); } catch (ignore_task_last1) { task_last_ms = 0; }
+			}
+			if(task_last_ms == 0 && task.containsKey("updated_time_long"))
+			{
+				try { task_last_ms = ifnull(task.get("updated_time_long"),"0").toString().toLong(); } catch (ignore_task_last2) { task_last_ms = 0; }
+			}
+			if(task_last_ms == 0 && task.containsKey("created_time_long"))
+			{
+				try { task_last_ms = ifnull(task.get("created_time_long"),"0").toString().toLong(); } catch (ignore_task_last3) { task_last_ms = 0; }
+			}
+			if(task_last_ms > 0)
+			{
+				if(task_last_ms.toString().length() <= 10)
+				{
+					task_last_ms = task_last_ms * 1000;
+				}
+			}
+
+			if(notes_today_only == true && task_last_ms > 0 && task_last_ms < today_start_ms)
+			{
+				continue;
+			}
+			if(project_note_count >= max_notes_per_project)
+			{
+				continue;
+			}
+
+			note_excerpt = note_text;
+			try {
+				if(note_excerpt.length() > 500)
+				{
+					note_excerpt = note_excerpt.subString(0,500) + "...";
+				}
+			} catch (ignore_excerpt) { note_excerpt = note_text; }
+			n = Map();
+			n.put("project_id",project_id);
+			n.put("project_name",project_name);
+			n.put("task_id",ifnull(task.get("id"),"").toString());
+			n.put("task_name",ifnull(task.get("name"),"").toString());
+			n.put("owner",ifnull(task.get("owner_name"),"").toString());
+			n.put("task_last_ms",task_last_ms);
+			n.put("note",note_excerpt);
+			notes.add(n);
+			project_note_count = project_note_count + 1;
+			notes_count = notes_count + 1;
+		}
+		if(project_note_count > 0)
+		{
+			projects_with_notes = projects_with_notes + 1;
+		}
+	}
+
+	stats.put("projects_scanned",projects_scanned);
+	stats.put("projects_with_notes",projects_with_notes);
+	stats.put("notes_count",notes_count);
+	stats.put("notes_today_only",notes_today_only);
+	stats.put("max_notes_per_project",max_notes_per_project);
+	stats.put("api_error_count",api_errors.size());
+	stats.put("generated_at",zoho.currenttime.toString());
+
+	result.put("notes",notes);
+	result.put("stats",stats);
+	result.put("api_errors",api_errors);
+	return result;
+}
