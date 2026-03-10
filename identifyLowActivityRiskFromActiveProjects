@@ -4,12 +4,12 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 	flagged_projects = List();
 	stats = Map();
 	api_errors = List();
-
 	active_projects = List();
-	if(base_data != null && base_data.containsKey("active_projects"))
-	{
-		active_projects = ifnull(base_data.get("active_projects"),List());
-	}
+	tasks = List();
+	bugs = List();
+	safe_tasks = List();
+	safe_bugs = List();
+	// ...existing code...
 
 	inactivity_days = 7;
 	overdue_threshold = 1;
@@ -68,8 +68,10 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 		try { project_name = ifnull(p.get("project_name"),"").toString(); } catch (ignore_pname) { project_name = ""; }
 		try { project_owner = ifnull(p.get("owner"),"").toString(); } catch (ignore_powner) { project_owner = ""; }
 
-		tasks = List();
-		bugs = List();
+		tasks.clear();
+		bugs.clear();
+		safe_tasks.clear();
+		safe_bugs.clear();
 		try
 		{
 			tasks_resp = invokeurl
@@ -101,7 +103,34 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 				parameters:{"range":"200","index":"1"}
 				connection:"zoho_project_connection"
 			];
-			if(bugs_resp != null && bugs_resp.containsKey("bugs"))
+			if(bugs_resp == null)
+			{
+				bugs = List();
+				err_b = Map();
+				err_b.put("stage","bugs_fetch");
+				err_b.put("project_id",project_id);
+				err_b.put("message","Null response from bugs API");
+				api_errors.add(err_b);
+			}
+			else if(!bugs_resp.containsKey("bugs"))
+			{
+				bugs = List();
+				err_b = Map();
+				err_b.put("stage","bugs_fetch");
+				err_b.put("project_id",project_id);
+				err_b.put("message","No 'bugs' key in response: " + bugs_resp.toString());
+				api_errors.add(err_b);
+			}
+			else if(bugs_resp.get("bugs") == null)
+			{
+				bugs = List();
+				err_b = Map();
+				err_b.put("stage","bugs_fetch");
+				err_b.put("project_id",project_id);
+				err_b.put("message","'bugs' key is null in response: " + bugs_resp.toString());
+				api_errors.add(err_b);
+			}
+			else
 			{
 				bugs = ifnull(bugs_resp.get("bugs"),List());
 			}
@@ -111,7 +140,7 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 			err_b = Map();
 			err_b.put("stage","bugs_fetch");
 			err_b.put("project_id",project_id);
-			err_b.put("message",bug_fetch_err.toString());
+			err_b.put("message","Exception: " + bug_fetch_err.toString());
 			api_errors.add(err_b);
 		}
 
@@ -136,7 +165,12 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 			latest_activity_ms = project_updated_ms;
 		}
 
-		for each  task in tasks
+		safe_tasks = List();
+		if(tasks != null)
+		{
+			safe_tasks = tasks;
+		}
+		for each  task in safe_tasks
 		{
 			if(task == null)
 			{
@@ -186,21 +220,42 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 			}
 		}
 
-		for each  bug in bugs
+		safe_bugs = List();
+		if(bugs != null)
+		{
+			safe_bugs = bugs;
+		}
+		for each  bug in safe_bugs
 		{
 			if(bug == null)
 			{
+				err_b = Map();
+				err_b.put("stage","bugs_loop");
+				err_b.put("project_id",project_id);
+				err_b.put("message","Null bug object encountered");
+				api_errors.add(err_b);
 				continue;
 			}
 			bug_ms = 0;
-			if(bug.containsKey("last_updated_time_long"))
+			// Defensive: check for missing keys and nulls
+			if(bug.containsKey("last_updated_time_long") && bug.get("last_updated_time_long") != null)
 			{
 				try { bug_ms = ifnull(bug.get("last_updated_time_long"),"0").toString().toLong(); } catch (ignore_bug_ms1) { bug_ms = 0; }
 			}
-			if(bug_ms == 0 && bug.containsKey("updated_time_long"))
+			if(bug_ms == 0 && bug.containsKey("updated_time_long") && bug.get("updated_time_long") != null)
 			{
 				try { bug_ms = ifnull(bug.get("updated_time_long"),"0").toString().toLong(); } catch (ignore_bug_ms2) { bug_ms = 0; }
 			}
+			if(bug_ms == 0)
+			{
+				err_b = Map();
+				err_b.put("stage","bugs_loop");
+				err_b.put("project_id",project_id);
+				err_b.put("message","Bug missing valid updated time: " + bug.toString());
+				api_errors.add(err_b);
+				continue; // Strictly skip further processing for this bug
+			}
+			// Only process bugs with a valid update time
 			if(bug_ms > 0)
 			{
 				if(bug_ms.toString().length() <= 10)
