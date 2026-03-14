@@ -14,7 +14,30 @@ map buildProjectRiskFromActiveProjects(map base_data)
 	portal_id = "7004368649";
 	dc_base = "https://projectsapi.zoho.com.au/restapi";
 	projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
-	now_ms = zoho.currenttime.toLong();
+	// Resolve `zoho.currenttime` to epoch millis robustly for Deluge
+	now_ms = 0;
+	try
+	{
+		now_ms = zoho.currenttime.toLong();
+	}
+	catch (now_err1)
+	{
+		try
+		{
+			now_ms = zoho.currenttime.toString().toDateTime().toLong();
+		}
+		catch (now_err2)
+		{
+			try
+			{
+				now_ms = zoho.currenttime.toString().toLong();
+			}
+			catch (now_err3)
+			{
+				now_ms = 0;
+			}
+		}
+	}
 	now_plus_7d_ms = now_ms + 604800000;
 
 	high = 0;
@@ -47,9 +70,45 @@ map buildProjectRiskFromActiveProjects(map base_data)
 				parameters:{"range":"200","index":"1"}
 				connection:"zoho_project_connection"
 			];
-			if(tasks_resp != null && tasks_resp.containsKey("tasks"))
+			try
 			{
-				tasks = ifnull(tasks_resp.get("tasks"),List());
+				if(tasks_resp == null)
+				{
+					tasks = List();
+				}
+				else if(tasks_resp.toString().trim() == "")
+				{
+					tasks = List();
+				}
+				else
+				{
+					try
+					{
+						if(tasks_resp.containsKey("tasks") && tasks_resp.get("tasks") != null)
+						{
+							tasks = ifnull(tasks_resp.get("tasks"),List());
+						}
+					}
+					catch (tasks_eval_err)
+					{
+						raw = "";
+						try { raw = tasks_resp.toString(); } catch (e) { raw = "<unprintable response>"; }
+						if(raw.trim() == "") { raw = "<empty response>"; }
+						err_te = Map();
+						err_te.put("stage","tasks_parse");
+						err_te.put("project_id",project_id);
+						err_te.put("message","Unexpected tasks response structure: " + raw);
+						api_errors.add(err_te);
+					}
+				}
+			}
+			catch (tasks_outer_err)
+			{
+				err_to = Map();
+				err_to.put("stage","tasks_parse_outer");
+				err_to.put("project_id",project_id);
+				err_to.put("message",tasks_outer_err.toString());
+				api_errors.add(err_to);
 			}
 		}
 		catch (task_fetch_err)
@@ -69,9 +128,45 @@ map buildProjectRiskFromActiveProjects(map base_data)
 				parameters:{"range":"200","index":"1"}
 				connection:"zoho_project_connection"
 			];
-			if(bugs_resp != null && bugs_resp.containsKey("bugs"))
+			try
 			{
-				bugs = ifnull(bugs_resp.get("bugs"),List());
+				if(bugs_resp == null)
+				{
+					bugs = List();
+				}
+				else if(bugs_resp.toString().trim() == "")
+				{
+					bugs = List();
+				}
+				else
+				{
+					try
+					{
+						if(bugs_resp.containsKey("bugs") && bugs_resp.get("bugs") != null)
+						{
+							bugs = ifnull(bugs_resp.get("bugs"),List());
+						}
+					}
+					catch (bugs_eval_err)
+					{
+						raw_b = "";
+						try { raw_b = bugs_resp.toString(); } catch (e) { raw_b = "<unprintable response>"; }
+						if(raw_b.trim() == "") { raw_b = "<empty response>"; }
+						err_be = Map();
+						err_be.put("stage","bugs_parse");
+						err_be.put("project_id",project_id);
+						err_be.put("message","Unexpected bugs response structure: " + raw_b);
+						api_errors.add(err_be);
+					}
+				}
+			}
+			catch (bugs_outer_err)
+			{
+				err_bo = Map();
+				err_bo.put("stage","bugs_parse_outer");
+				err_bo.put("project_id",project_id);
+				err_bo.put("message",bugs_outer_err.toString());
+				api_errors.add(err_bo);
 			}
 		}
 		catch (bug_fetch_err)

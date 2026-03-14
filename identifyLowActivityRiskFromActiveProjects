@@ -10,7 +10,30 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 	inactivity_days = 7;
 	overdue_threshold = 1;
 	projects_base_url = "";
-	now_ms = zoho.currenttime.toString().toLong();
+	// Resolve `zoho.currenttime` to epoch millis robustly for Deluge
+	now_ms = 0;
+	try
+	{
+		now_ms = zoho.currenttime.toLong();
+	}
+	catch (now_err1)
+	{
+		try
+		{
+			now_ms = zoho.currenttime.toString().toDateTime().toLong();
+		}
+		catch (now_err2)
+		{
+			try
+			{
+				now_ms = zoho.currenttime.toString().toLong();
+			}
+			catch (now_err3)
+			{
+				now_ms = 0;
+			}
+		}
+	}
 
 	// Counters
 	projects_scanned = 0;
@@ -81,10 +104,21 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 		{
 			if(projects_base_url != "" && project_id != "")
 			{
-				page_index = 1;
 				page_size = 200;
-				more = true;
-				while(more)
+				// Use a bounded page loop instead of `while` to stay compatible with Zoho Flow Deluge
+				page_index_list = List();
+				// Adjust max pages as needed (10 covers up to 2000 tasks)
+				page_index_list.add(1);
+				page_index_list.add(2);
+				page_index_list.add(3);
+				page_index_list.add(4);
+				page_index_list.add(5);
+				page_index_list.add(6);
+				page_index_list.add(7);
+				page_index_list.add(8);
+				page_index_list.add(9);
+				page_index_list.add(10);
+				for each page_index in page_index_list
 				{
 					tasks_resp = invokeurl
 					[
@@ -96,14 +130,12 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 
 					if(tasks_resp == null || !tasks_resp.containsKey("tasks") || tasks_resp.get("tasks") == null)
 					{
-						more = false;
 						break;
 					}
 
 					page_tasks = tasks_resp.get("tasks");
 					if(page_tasks == null || page_tasks.size() == 0)
 					{
-						more = false;
 						break;
 					}
 
@@ -116,11 +148,7 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 					// If fewer than page_size returned, we've reached the last page
 					if(page_tasks.size() < page_size)
 					{
-						more = false;
-					}
-					else
-					{
-						page_index = page_index + 1;
+						break;
 					}
 				}
 			}
