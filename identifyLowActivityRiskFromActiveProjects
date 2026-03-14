@@ -5,85 +5,132 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 	stats = Map();
 	api_errors = List();
 	active_projects = List();
-	tasks = List();
-	bugs = List();
-	safe_tasks = List();
-	safe_bugs = List();
-	// ...existing code...
 
+	// Defaults
 	inactivity_days = 7;
 	overdue_threshold = 1;
-	if(inactivity_days_text != null)
+	projects_base_url = "";
+	now_ms = zoho.currenttime.toString().toLong();
+
+	// Counters
+	projects_scanned = 0;
+	flagged_count = 0;
+	low_activity_count = 0;
+	overdue_risk_count = 0;
+
+	// Optional config from input payload
+	if(base_data != null && base_data.containsKey("projects_base_url") && base_data.get("projects_base_url") != null)
 	{
-		try
+		projects_base_url = base_data.get("projects_base_url").toString();
+	}
+
+	// Parse thresholds safely
+	try
+	{
+		if(inactivity_days_text != null && inactivity_days_text.trim() != "")
 		{
 			inactivity_days = inactivity_days_text.toLong();
 		}
-		catch (ignore_inactivity)
-		{
-			inactivity_days = 7;
-		}
 	}
-	if(overdue_threshold_text != null)
+	catch (ignore_inactivity_parse)
 	{
-		try
+		inactivity_days = 7;
+	}
+	if(inactivity_days < 0)
+	{
+		inactivity_days = 0;
+	}
+
+	try
+	{
+		if(overdue_threshold_text != null && overdue_threshold_text.trim() != "")
 		{
 			overdue_threshold = overdue_threshold_text.toLong();
 		}
-		catch (ignore_overdue_threshold)
-		{
-			overdue_threshold = 1;
-		}
 	}
-	if(inactivity_days < 1)
+	catch (ignore_overdue_parse)
 	{
-		inactivity_days = 1;
+		overdue_threshold = 1;
 	}
 	if(overdue_threshold < 0)
 	{
 		overdue_threshold = 0;
 	}
 
-	portal_id = "7004368649";
-	dc_base = "https://projectsapi.zoho.com.au/restapi";
-	projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
-	now_ms = zoho.currenttime.toLong();
-
-	projects_scanned = 0;
-	flagged_count = 0;
-	low_activity_count = 0;
-	overdue_risk_count = 0;
-
-	for each  p in active_projects
+	if(base_data != null && base_data.containsKey("active_projects") && base_data.get("active_projects") != null)
 	{
-		if(p == null)
-		{
-			continue;
-		}
+		active_projects = base_data.get("active_projects");
+	}
+
+	for each p in active_projects
+	{
 		projects_scanned = projects_scanned + 1;
+
 		project_id = "";
 		project_name = "";
 		project_owner = "";
+
 		try { project_id = ifnull(p.get("project_id"),"").toString(); } catch (ignore_pid) { project_id = ""; }
 		try { project_name = ifnull(p.get("project_name"),"").toString(); } catch (ignore_pname) { project_name = ""; }
 		try { project_owner = ifnull(p.get("owner"),"").toString(); } catch (ignore_powner) { project_owner = ""; }
 
-		tasks.clear();
-		bugs.clear();
-		safe_tasks.clear();
-		safe_bugs.clear();
+		tasks = List();
+
+		// Fetch tasks with pagination (Zoho returns up to `range` per page)
 		try
 		{
-			tasks_resp = invokeurl
-			[
-				url :projects_base_url + project_id + "/tasks/"
-				type :GET
-				parameters:{"range":"200","index":"1"}
-				connection:"zoho_project_connection"
-			];
-			if(tasks_resp != null && tasks_resp.containsKey("tasks"))
+			if(projects_base_url != "" && project_id != "")
 			{
-				tasks = ifnull(tasks_resp.get("tasks"),List());
+				page_index = 1;
+				page_size = 200;
+				more = true;
+				while(more)
+				{
+					tasks_resp = invokeurl
+					[
+						url : projects_base_url + project_id + "/tasks/"
+						type : GET
+						parameters: {"range":page_size.toString(),"index":page_index.toString()}
+						connection:"zoho_project_connection"
+					];
+
+					if(tasks_resp == null || !tasks_resp.containsKey("tasks") || tasks_resp.get("tasks") == null)
+					{
+						more = false;
+						break;
+					}
+
+					page_tasks = tasks_resp.get("tasks");
+					if(page_tasks == null || page_tasks.size() == 0)
+					{
+						more = false;
+						break;
+					}
+
+					// Append page results
+					for each pt in page_tasks
+					{
+						tasks.add(pt);
+					}
+
+					// If fewer than page_size returned, we've reached the last page
+					if(page_tasks.size() < page_size)
+					{
+						more = false;
+					}
+					else
+					{
+						page_index = page_index + 1;
+					}
+				}
+			}
+			else
+			{
+				err_cfg = Map();
+				err_cfg.put("stage","tasks_fetch");
+				err_cfg.put("project_id",project_id);
+				err_cfg.put("message","Missing projects_base_url or project_id");
+				api_errors.add(err_cfg);
 			}
 		}
 		catch (task_fetch_err)
@@ -94,65 +141,17 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 			err_t.put("message",task_fetch_err.toString());
 			api_errors.add(err_t);
 		}
-		try
-		{
-			bugs_resp = invokeurl
-			[
-				url :projects_base_url + project_id + "/bugs/"
-				type :GET
-				parameters:{"range":"200","index":"1"}
-				connection:"zoho_project_connection"
-			];
-			if(bugs_resp == null)
-			{
-				bugs = List();
-				err_b = Map();
-				err_b.put("stage","bugs_fetch");
-				err_b.put("project_id",project_id);
-				err_b.put("message","Null response from bugs API");
-				api_errors.add(err_b);
-			}
-			else if(!bugs_resp.containsKey("bugs"))
-			{
-				bugs = List();
-				err_b = Map();
-				err_b.put("stage","bugs_fetch");
-				err_b.put("project_id",project_id);
-				err_b.put("message","No 'bugs' key in response: " + bugs_resp.toString());
-				api_errors.add(err_b);
-			}
-			else if(bugs_resp.get("bugs") == null)
-			{
-				bugs = List();
-				err_b = Map();
-				err_b.put("stage","bugs_fetch");
-				err_b.put("project_id",project_id);
-				err_b.put("message","'bugs' key is null in response: " + bugs_resp.toString());
-				api_errors.add(err_b);
-			}
-			else
-			{
-				bugs = ifnull(bugs_resp.get("bugs"),List());
-			}
-		}
-		catch (bug_fetch_err)
-		{
-			err_b = Map();
-			err_b.put("stage","bugs_fetch");
-			err_b.put("project_id",project_id);
-			err_b.put("message","Exception: " + bug_fetch_err.toString());
-			api_errors.add(err_b);
-		}
 
 		overdue_tasks = 0;
 		latest_activity_ms = 0;
 
+		// Project-level updated time fallback
 		project_updated_ms = 0;
-		if(p.containsKey("updated_time_long"))
+		if(p != null && p.containsKey("updated_time_long"))
 		{
 			try { project_updated_ms = ifnull(p.get("updated_time_long"),"0").toString().toLong(); } catch (ignore_project_updated) { project_updated_ms = 0; }
 		}
-		if(project_updated_ms == 0 && p.containsKey("updated_date_long"))
+		if(project_updated_ms == 0 && p != null && p.containsKey("updated_date_long"))
 		{
 			try { project_updated_ms = ifnull(p.get("updated_date_long"),"0").toString().toLong(); } catch (ignore_project_updated2) { project_updated_ms = 0; }
 		}
@@ -165,19 +164,17 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 			latest_activity_ms = project_updated_ms;
 		}
 
-		safe_tasks = List();
-		if(tasks != null)
-		{
-			safe_tasks = tasks;
-		}
-		for each  task in safe_tasks
+		// Task-level risk/activity scan
+		for each task in tasks
 		{
 			if(task == null)
 			{
 				continue;
 			}
+
 			status_lc = "";
 			try { status_lc = ifnull(task.get("status"),"").toString().toLowerCase(); } catch (ignore_status) { status_lc = ""; }
+
 			is_closed = false;
 			if(status_lc.contains("closed") || status_lc == "completed")
 			{
@@ -216,55 +213,6 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 				if(task_ms > latest_activity_ms)
 				{
 					latest_activity_ms = task_ms;
-				}
-			}
-		}
-
-		safe_bugs = List();
-		if(bugs != null)
-		{
-			safe_bugs = bugs;
-		}
-		for each  bug in safe_bugs
-		{
-			if(bug == null)
-			{
-				err_b = Map();
-				err_b.put("stage","bugs_loop");
-				err_b.put("project_id",project_id);
-				err_b.put("message","Null bug object encountered");
-				api_errors.add(err_b);
-				continue;
-			}
-			bug_ms = 0;
-			// Defensive: check for missing keys and nulls
-			if(bug.containsKey("last_updated_time_long") && bug.get("last_updated_time_long") != null)
-			{
-				try { bug_ms = ifnull(bug.get("last_updated_time_long"),"0").toString().toLong(); } catch (ignore_bug_ms1) { bug_ms = 0; }
-			}
-			if(bug_ms == 0 && bug.containsKey("updated_time_long") && bug.get("updated_time_long") != null)
-			{
-				try { bug_ms = ifnull(bug.get("updated_time_long"),"0").toString().toLong(); } catch (ignore_bug_ms2) { bug_ms = 0; }
-			}
-			if(bug_ms == 0)
-			{
-				err_b = Map();
-				err_b.put("stage","bugs_loop");
-				err_b.put("project_id",project_id);
-				err_b.put("message","Bug missing valid updated time: " + bug.toString());
-				api_errors.add(err_b);
-				continue; // Strictly skip further processing for this bug
-			}
-			// Only process bugs with a valid update time
-			if(bug_ms > 0)
-			{
-				if(bug_ms.toString().length() <= 10)
-				{
-					bug_ms = bug_ms * 1000;
-				}
-				if(bug_ms > latest_activity_ms)
-				{
-					latest_activity_ms = bug_ms;
 				}
 			}
 		}
