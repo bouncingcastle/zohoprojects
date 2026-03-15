@@ -1,4 +1,4 @@
-map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_projects_text, string include_activity_text, string max_events_per_project_text, string project_status_filter_text, string project_type_filter_text)
+map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_projects_text, string project_status_filter_text, string project_type_filter_text, string portal_id_text, string dc_base_text)
 {
 	result = Map();
 	window = Map();
@@ -45,8 +45,16 @@ map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_p
 
 	status_filter_tokens = List();
 	type_filter_tokens = List();
+
 	status_filter_lc = ifnull(project_status_filter_text,"").toString().toLowerCase().trim();
+	status_filter_lc = status_filter_lc.replaceAll("&amp;","&");
+	status_filter_lc = status_filter_lc.replaceAll("\r","\n");
+	status_filter_lc = status_filter_lc.replaceAll("\n",",");
+
 	type_filter_lc = ifnull(project_type_filter_text,"").toString().toLowerCase().trim();
+	type_filter_lc = type_filter_lc.replaceAll("\r","\n");
+	type_filter_lc = type_filter_lc.replaceAll("\n",",");
+
 	if(status_filter_lc != "")
 	{
 		for each  s in status_filter_lc.toList(",")
@@ -70,9 +78,16 @@ map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_p
 		}
 	}
 
-	portal_id = "7004368649";
-	dc_base = "https://projectsapi.zoho.com.au/restapi";
-	projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
+	portal_id = ifnull(portal_id_text,"").toString().trim();
+	dc_base = ifnull(dc_base_text,"").toString().trim();
+
+	projects_base_url = "";
+	if(portal_id != "" && dc_base != "")
+	{
+		projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
+		projects_base_url = projects_base_url.replaceAll("//portal/","/portal/");
+	}
+
 	page_size = 100;
 	page_markers_text = "x".leftpad(200);
 	page_markers_text = page_markers_text.replaceAll(" ",",x");
@@ -82,140 +97,181 @@ map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_p
 	projects_request_summary = List();
 	project_pages = 0;
 	projects_fetched = 0;
-	projects_excluded_by_status = 0;
-	projects_excluded_onboarding = 0;
-	projects_excluded_non_agent = 0;
 	projects_excluded_by_input_status_filter = 0;
 	projects_excluded_by_input_type_filter = 0;
+	projects_missing_custom_status = 0;
 	candidates = List();
 	done = false;
+	can_fetch = true;
 
-	for each index page_no in page_markers
+	if(portal_id == "" || dc_base == "")
 	{
-		if(done == true)
-		{
-			break;
-		}
-		start_page_index = page_no * page_size + 1;
-		resp = Map();
-		project_list = List();
-		try
-		{
-			resp = invokeurl
-			[
-				url :projects_base_url
-				type :GET
-				parameters:{"index":start_page_index,"range":page_size}
-				connection:"zoho_project_connection"
-			];
-			if(projects_request_summary.size() < 5)
-			{
-				projects_request_summary.add("GET /projects/ index=" + start_page_index + " range=" + page_size);
-			}
-		}
-		catch (projects_fetch_err)
-		{
-			err = Map();
-			err.put("stage","projects_fetch");
-			err.put("index",start_page_index);
-			err.put("message",projects_fetch_err.toString());
-			projects_api_errors.add(err);
-			done = true;
-		}
+		can_fetch = false;
+		err_cfg = Map();
+		err_cfg.put("stage","source_config");
+		err_cfg.put("message","portal_id_text and dc_base_text are required");
+		projects_api_errors.add(err_cfg);
+	}
 
-		if(done == false)
+	if(status_filter_tokens.size() == 0)
+	{
+		can_fetch = false;
+		err_status = Map();
+		err_status.put("stage","input_validation");
+		err_status.put("message","project_status_filter_text is required (include-list)");
+		projects_api_errors.add(err_status);
+	}
+
+	if(type_filter_tokens.size() == 0)
+	{
+		can_fetch = false;
+		err_type = Map();
+		err_type.put("stage","input_validation");
+		err_type.put("message","project_type_filter_text is required (contains-any)");
+		projects_api_errors.add(err_type);
+	}
+
+	if(can_fetch == true)
+	{
+		for each index page_no in page_markers
 		{
-			projects_key_found = false;
-			if(resp != null)
+			if(done == true)
 			{
-				try
+				break;
+			}
+
+			start_page_index = page_no * page_size + 1;
+			resp = Map();
+			project_list = List();
+
+			try
+			{
+				resp = invokeurl
+				[
+					url :projects_base_url
+					type :GET
+					parameters:{"index":start_page_index,"range":page_size}
+					connection:"zoho_project_connection"
+				];
+				if(projects_request_summary.size() < 5)
 				{
-					if(resp.containsKey("projects"))
-					{
-						projects_key_found = true;
-					}
-				}
-				catch (ignore_projects_key)
-				{
-					projects_key_found = false;
+					projects_request_summary.add("GET /projects/ index=" + start_page_index + " range=" + page_size);
 				}
 			}
-			if(projects_key_found == true)
+			catch (projects_fetch_err)
 			{
-				projects_any = resp.get("projects");
-				if(projects_any != null)
-				{
-					project_list = projects_any;
-				}
-			}
-			else
-			{
-				err2 = Map();
-				err2.put("stage","projects_parse");
-				err2.put("index",start_page_index);
-				err2.put("message","projects key missing in response or response not map");
-				projects_api_errors.add(err2);
+				err = Map();
+				err.put("stage","projects_fetch");
+				err.put("index",start_page_index);
+				err.put("message",projects_fetch_err.toString());
+				projects_api_errors.add(err);
 				done = true;
 			}
-		}
 
-		project_pages = project_pages + 1;
-		projects_fetched = projects_fetched + project_list.size();
-
-		for each  project_rec in project_list
-		{
-			if(project_rec == null)
+			if(done == false)
 			{
-				continue;
-			}
-			project_id = ifnull(project_rec.get("id"),"").toString();
-			project_name = ifnull(project_rec.get("name"),"").toString();
-			project_status = ifnull(project_rec.get("status"),"").toString();
-			project_owner = ifnull(project_rec.get("owner_name"),"").toString();
-			project_updated_date = ifnull(project_rec.get("updated_date"),"").toString();
-			implementation_type = "";
-			include_project = true;
-			excluded_by_onboarding = false;
-
-			status_lc = project_status.toLowerCase();
-			if(status_lc == "archived" || status_lc == "closed" || status_lc == "inactive" || status_lc == "completed" || status_lc == "cancelled" || status_lc == "to do" || status_lc == "pipeline")
-			{
-				include_project = false;
-				projects_excluded_by_status = projects_excluded_by_status + 1;
-			}
-
-			if(project_rec.containsKey("custom_fields"))
-			{
-				custom_fields_any = project_rec.get("custom_fields");
-				if(custom_fields_any != null)
+				projects_key_found = false;
+				if(resp != null)
 				{
-					for each  field_rec in custom_fields_any
+					try
 					{
-						if(field_rec == null)
+						if(resp.containsKey("projects"))
 						{
-							continue;
+							projects_key_found = true;
 						}
-						field_label = ifnull(field_rec.get("label_name"),"").toString();
-						if(field_label == "Implementation Type")
+					}
+					catch (ignore_projects_key)
+					{
+						projects_key_found = false;
+					}
+				}
+
+				if(projects_key_found == true)
+				{
+					projects_any = resp.get("projects");
+					if(projects_any != null)
+					{
+						project_list = projects_any;
+					}
+				}
+				else
+				{
+					err2 = Map();
+					err2.put("stage","projects_parse");
+					err2.put("index",start_page_index);
+					err2.put("message","projects key missing in response or response not map");
+					projects_api_errors.add(err2);
+					done = true;
+				}
+			}
+
+			project_pages = project_pages + 1;
+			projects_fetched = projects_fetched + project_list.size();
+
+			for each  project_rec in project_list
+			{
+				if(project_rec == null)
+				{
+					continue;
+				}
+
+				project_id = ifnull(project_rec.get("id"),"").toString();
+				project_name = ifnull(project_rec.get("name"),"").toString();
+				project_status_native = ifnull(project_rec.get("status"),"").toString();
+				project_owner = ifnull(project_rec.get("owner_name"),"").toString();
+				implementation_type = "";
+
+				// Primary source for custom status
+				custom_status_value = ifnull(project_rec.get("custom_status_name"),"").toString();
+
+				include_project = true;
+
+				if(project_rec.containsKey("custom_fields"))
+				{
+					custom_fields_any = project_rec.get("custom_fields");
+					if(custom_fields_any != null)
+					{
+						for each  field_rec in custom_fields_any
 						{
-							field_value_text = ifnull(field_rec.get("value"),"").toString();
-							implementation_type = field_value_text;
-							if(field_value_text.toLowerCase().contains("onboarding"))
+							if(field_rec == null)
 							{
-								include_project = false;
-								excluded_by_onboarding = true;
+								continue;
+							}
+							field_label_lc = ifnull(field_rec.get("label_name"),"").toString().toLowerCase().trim();
+							field_api_name_lc = ifnull(field_rec.get("api_name"),"").toString().toLowerCase().trim();
+							field_value_text = ifnull(field_rec.get("value"),"").toString();
+
+							if(implementation_type == "" && field_label_lc == "implementation type")
+							{
+								implementation_type = field_value_text;
+							}
+
+							// Fallback if custom_status_name is delivered in custom_fields
+							if(custom_status_value == "" && field_api_name_lc == "custom_status_name")
+							{
+								custom_status_value = field_value_text;
+							}
+
+							if(implementation_type != "" && custom_status_value != "")
+							{
+								break;
 							}
 						}
 					}
 				}
-			}
 
-			if(include_project == true && status_filter_tokens.size() > 0)
-			{
-				status_filter_match = false;
-				for each  st in status_filter_tokens
+				if(custom_status_value == "")
 				{
-					if(status_lc == st || status_lc.contains(st))
+					projects_missing_custom_status = projects_missing_custom_status + 1;
+				}
+
+				status_lc = custom_status_value.toLowerCase();
+
+				status_filter_match = false;
+				for each  st_exact in status_filter_tokens
+				{
+					st_exact_trim = ifnull(st_exact,"").toString().trim();
+					if(st_exact_trim != "" && status_lc == st_exact_trim)
 					{
 						status_filter_match = true;
 						break;
@@ -223,62 +279,59 @@ map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_p
 				}
 				if(status_filter_match == false)
 				{
+					for each  st_contains in status_filter_tokens
+					{
+						st_contains_trim = ifnull(st_contains,"").toString().trim();
+						if(st_contains_trim != "" && status_lc.contains(st_contains_trim))
+						{
+							status_filter_match = true;
+							break;
+						}
+					}
+				}
+				if(status_filter_match == false)
+				{
 					include_project = false;
 					projects_excluded_by_input_status_filter = projects_excluded_by_input_status_filter + 1;
 				}
-			}
 
-			if(include_project == true && type_filter_tokens.size() > 0)
-			{
-				impl_lc = implementation_type.toLowerCase();
-				type_filter_match = false;
-				for each  tt in type_filter_tokens
+				if(include_project == true)
 				{
-					if(impl_lc.contains(tt))
+					impl_lc = implementation_type.toLowerCase();
+					type_filter_match = false;
+					for each  tt in type_filter_tokens
 					{
-						type_filter_match = true;
-						break;
+						tt_trim = ifnull(tt,"").toString().trim();
+						if(tt_trim != "" && impl_lc.contains(tt_trim))
+						{
+							type_filter_match = true;
+							break;
+						}
+					}
+					if(type_filter_match == false)
+					{
+						include_project = false;
+						projects_excluded_by_input_type_filter = projects_excluded_by_input_type_filter + 1;
 					}
 				}
-				if(type_filter_match == false)
-				{
-					include_project = false;
-					projects_excluded_by_input_type_filter = projects_excluded_by_input_type_filter + 1;
-				}
-			}
 
-			if(include_project == true)
-			{
-				if(implementation_type.toLowerCase().contains("agent studio"))
+				if(include_project == true)
 				{
 					item = Map();
 					item.put("project_id",project_id);
 					item.put("project_name",project_name);
-					item.put("status",project_status);
+					item.put("status",custom_status_value);
+					item.put("native_status",project_status_native);
 					item.put("owner",project_owner);
-					item.put("updated_date",project_updated_date);
-					item.put("updated_time_long",ifnull(project_rec.get("updated_time_long"),"0"));
-					item.put("updated_date_long",ifnull(project_rec.get("updated_date_long"),"0"));
 					item.put("implementation_type",implementation_type);
 					candidates.add(item);
 				}
-				else
-				{
-					projects_excluded_non_agent = projects_excluded_non_agent + 1;
-				}
 			}
-			else
-			{
-				if(excluded_by_onboarding == true)
-				{
-					projects_excluded_onboarding = projects_excluded_onboarding + 1;
-				}
-			}
-		}
 
-		if(project_list.size() < page_size)
-		{
-			done = true;
+			if(project_list.size() < page_size)
+			{
+				done = true;
+			}
 		}
 	}
 
@@ -317,6 +370,7 @@ map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_p
 	{
 		next_index = 0;
 	}
+
 	window.put("start_index",window_start_index);
 	window.put("end_index",window_end_index);
 	window.put("processed",processed);
@@ -328,17 +382,15 @@ map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_p
 	limits.put("max_projects",max_projects);
 	limits.put("project_status_filter",project_status_filter_text);
 	limits.put("project_type_filter",project_type_filter_text);
-	limits.put("include_activity",include_activity_text);
-	limits.put("max_events_per_project",max_events_per_project_text);
+	limits.put("portal_id",portal_id);
+	limits.put("dc_base",dc_base);
 
 	source_stats.put("project_pages",project_pages);
 	source_stats.put("projects_fetched",projects_fetched);
 	source_stats.put("active_projects_total",total_projects);
-	source_stats.put("projects_excluded_by_status",projects_excluded_by_status);
-	source_stats.put("projects_excluded_onboarding",projects_excluded_onboarding);
-	source_stats.put("projects_excluded_non_agent",projects_excluded_non_agent);
 	source_stats.put("projects_excluded_by_input_status_filter",projects_excluded_by_input_status_filter);
 	source_stats.put("projects_excluded_by_input_type_filter",projects_excluded_by_input_type_filter);
+	source_stats.put("projects_missing_custom_status",projects_missing_custom_status);
 	source_stats.put("api_error_count",projects_api_errors.size());
 	source_stats.put("request_summary",projects_request_summary);
 	if(projects_api_errors.size() > 0)
@@ -350,8 +402,6 @@ map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_p
 	result.put("limits",limits);
 	result.put("source_stats",source_stats);
 	result.put("active_projects",active_projects);
-
-	// Provide the constructed base URL and config so downstream functions can reuse it
 	result.put("projects_base_url",projects_base_url);
 	result.put("portal_id",portal_id);
 	result.put("dc_base",dc_base);
