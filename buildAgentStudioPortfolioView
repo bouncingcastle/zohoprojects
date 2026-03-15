@@ -350,5 +350,10 @@ map buildAgentStudioPortfolioSnapshotPaged(string start_index_text, string max_p
 	result.put("limits",limits);
 	result.put("source_stats",source_stats);
 	result.put("active_projects",active_projects);
+
+	// Provide the constructed base URL and config so downstream functions can reuse it
+	result.put("projects_base_url",projects_base_url);
+	result.put("portal_id",portal_id);
+	result.put("dc_base",dc_base);
 	return result;
 }

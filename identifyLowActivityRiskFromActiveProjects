@@ -47,6 +47,65 @@ map identifyLowActivityRiskFromActiveProjects(map base_data, string inactivity_d
 		projects_base_url = base_data.get("projects_base_url").toString();
 	}
 
+	// If caller didn't pass a full base URL, try to construct it from portal_id + dc_base
+	if(projects_base_url == "" && base_data != null)
+	{
+		portal_id = "";
+		dc_base = "";
+		try { portal_id = ifnull(base_data.get("portal_id"), "").toString(); } catch (ignore_pid_cfg) { portal_id = ""; }
+		try { dc_base = ifnull(base_data.get("dc_base"), "").toString(); } catch (ignore_dc_cfg) { dc_base = ""; }
+		if(portal_id != "" && dc_base != "")
+		{
+			projects_base_url = dc_base;
+			// Ensure single trailing slash
+			if(projects_base_url.endsWith("/") == false)
+			{
+				projects_base_url = projects_base_url + "/";
+			}
+			projects_base_url = projects_base_url + "portal/" + portal_id + "/projects/";
+		}
+	}
+
+	// If still missing, attempt to use the common hardcoded defaults used elsewhere
+	if(projects_base_url == "")
+	{
+		try
+		{
+			// Mirror buildAgentStudioPortfolioView defaults
+			portal_id = "7004368649";
+			dc_base = "https://projectsapi.zoho.com.au/restapi";
+			projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
+		}
+		catch (ignore_hardcode)
+		{
+			// noop - will fall through to error handling below
+			projects_base_url = "";
+		}
+	}
+
+	// If still missing after defaults, return a clear config error rather than proceeding
+	if(projects_base_url == "")
+	{
+		err_cfg = Map();
+		err_cfg.put("stage","config");
+		err_cfg.put("message","Missing projects_base_url and no portal_id/dc_base provided in base_data");
+		api_errors.add(err_cfg);
+
+		stats.put("projects_scanned",projects_scanned);
+		stats.put("flagged_count",flagged_count);
+		stats.put("low_activity_count",low_activity_count);
+		stats.put("overdue_risk_count",overdue_risk_count);
+		stats.put("inactivity_days_threshold",inactivity_days);
+		stats.put("overdue_tasks_threshold",overdue_threshold);
+		stats.put("api_error_count",api_errors.size());
+		stats.put("generated_at",zoho.currenttime.toString());
+
+		result.put("flagged_projects",flagged_projects);
+		result.put("stats",stats);
+		result.put("api_errors",api_errors);
+		return result;
+	}
+
 	// Parse thresholds safely
 	try
 	{
