@@ -1,0 +1,394 @@
+map buildProjectViewStaleTasks(list active_projects, string dc_base, string portal_id)
+{
+	result = Map();
+	api_errors = List();
+	stale_task_refs = List();
+	projects_with_stale_started_open_tasks = List();
+	debug = Map();
+
+	if(active_projects == null)
+	{
+		active_projects = List();
+	}
+	if(dc_base == null)
+	{
+		dc_base = "";
+	}
+	if(portal_id == null)
+	{
+		portal_id = "";
+	}
+
+	dc_base = dc_base.toString().trim();
+	portal_id = portal_id.toString().trim();
+
+	if(portal_id == "" || dc_base == "")
+	{
+		err_cfg = Map();
+		err_cfg.put("stage","config");
+		err_cfg.put("message","Missing required inputs: portal_id and dc_base");
+		api_errors.add(err_cfg);
+		result.put("projects_with_stale_started_open_tasks",projects_with_stale_started_open_tasks);
+		result.put("stale_task_refs",stale_task_refs);
+		result.put("api_errors",api_errors);
+		return result;
+	}
+
+	projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
+	page_size = 100;
+	page_markers_text = "x".leftpad(50);
+	page_markers_text = page_markers_text.replaceAll(" ",",x");
+	page_markers = page_markers_text.toList(",");
+
+	now_ms = 0;
+	try
+	{
+		now_ms = zoho.currenttime.toLong();
+	}
+	catch (now_err1)
+	{
+		try
+		{
+			now_ms = zoho.currenttime.toString().toDateTime().toLong();
+		}
+		catch (now_err2)
+		{
+			try
+			{
+				now_ms = zoho.currenttime.toString().toLong();
+			}
+			catch (now_err3)
+			{
+				now_ms = 0;
+			}
+		}
+	}
+	now_minus_7d_ms = now_ms - 604800000;
+
+	debug.put("input_project_count",active_projects.size());
+	debug.put("projects_processed",0);
+	debug.put("task_pages_fetched",0);
+	debug.put("tasks_seen",0);
+	debug.put("open_tasks_seen",0);
+	debug.put("open_started_tasks_seen",0);
+	debug.put("tasks_missing_start",0);
+	debug.put("tasks_missing_touch",0);
+	debug.put("stale_tasks_found",0);
+	debug.put("projects_with_stale_tasks",0);
+
+	for each  p in active_projects
+	{
+		if(p == null)
+		{
+			continue;
+		}
+
+		project_id = ifnull(p.get("project_id"),"").toString();
+		if(project_id == "")
+		{
+			continue;
+		}
+
+		debug.put("projects_processed",debug.get("projects_processed") + 1);
+
+		project_name = ifnull(p.get("project_name"),"").toString();
+		project_owner = ifnull(p.get("owner"),"").toString();
+
+		stale_started_open_tasks = 0;
+		page_no = 1;
+		continue_paging = true;
+
+		for each  page_marker in page_markers
+		{
+			if(continue_paging == false)
+			{
+				continue;
+			}
+
+			page_tasks = List();
+			tasks_key_found = false;
+
+			try
+			{
+				tasks_resp = invokeurl
+				[
+					url :projects_base_url + project_id + "/tasks/"
+					type :GET
+					parameters:{"range":page_size.toString(),"index":page_no.toString()}
+					connection:"zoho_project_connection"
+				];
+
+				debug.put("task_pages_fetched",debug.get("task_pages_fetched") + 1);
+
+				try
+				{
+					if(tasks_resp != null && tasks_resp.toString().trim() != "")
+					{
+						if(tasks_resp.containsKey("tasks") && tasks_resp.get("tasks") != null)
+						{
+							tasks_key_found = true;
+							page_tasks = ifnull(tasks_resp.get("tasks"),List());
+						}
+					}
+				}
+				catch (tasks_parse_err)
+				{
+					err_t = Map();
+					err_t.put("stage","tasks_parse");
+					err_t.put("project_id",project_id);
+					err_t.put("page",page_no);
+					err_t.put("message",tasks_parse_err.toString());
+					api_errors.add(err_t);
+					continue_paging = false;
+				}
+
+				if(tasks_key_found == false && tasks_resp != null && tasks_resp.toString().trim() != "")
+				{
+					err_shape = Map();
+					err_shape.put("stage","tasks_shape");
+					err_shape.put("project_id",project_id);
+					err_shape.put("page",page_no);
+					err_shape.put("message","tasks key missing in response");
+					err_shape.put("raw_response",tasks_resp.toString());
+					api_errors.add(err_shape);
+					continue_paging = false;
+				}
+			}
+			catch (task_fetch_err)
+			{
+				err_tf = Map();
+				err_tf.put("stage","tasks_fetch");
+				err_tf.put("project_id",project_id);
+				err_tf.put("page",page_no);
+				err_tf.put("message",task_fetch_err.toString());
+				api_errors.add(err_tf);
+				continue_paging = false;
+			}
+
+			for each  task in page_tasks
+			{
+				if(task == null)
+				{
+					continue;
+				}
+
+				debug.put("tasks_seen",debug.get("tasks_seen") + 1);
+
+				status_lc = "";
+				try
+				{
+					status_obj = task.get("status");
+					try
+					{
+						if(status_obj.containsKey("name"))
+						{
+							status_lc = ifnull(status_obj.get("name"),"").toString().toLowerCase();
+						}
+					}
+					catch (ignore_status_map)
+					{
+						status_lc = ifnull(status_obj,"").toString().toLowerCase();
+					}
+				}
+				catch (ignore_status_root)
+				{
+					status_lc = "";
+				}
+
+				is_closed = false;
+				if(status_lc.contains("closed") || status_lc == "completed")
+				{
+					is_closed = true;
+				}
+				if(is_closed == true)
+				{
+					continue;
+				}
+
+				debug.put("open_tasks_seen",debug.get("open_tasks_seen") + 1);
+
+				start_ms = 0;
+				if(task.containsKey("start_date_long"))
+				{
+					try
+					{
+						start_ms = ifnull(task.get("start_date_long"),"0").toString().toLong();
+					}
+					catch (ignore_start_long)
+					{
+						start_ms = 0;
+					}
+				}
+				if(start_ms > 0 && start_ms.toString().length() <= 10)
+				{
+					start_ms = start_ms * 1000;
+				}
+				if(start_ms == 0)
+				{
+					start_date = ifnull(task.get("start_date"),"").toString();
+					if(start_date != "")
+					{
+						try
+						{
+							start_dt = "";
+							try
+							{
+								start_dt = start_date.toDate("MM-dd-yyyy");
+							}
+							catch (ignore_start_fmt)
+							{
+								start_dt = start_date.toDate();
+							}
+							start_ms = start_dt.toDateTime().toLong();
+						}
+						catch (ignore_start_eval)
+						{
+							start_ms = 0;
+						}
+					}
+				}
+				if(start_ms == 0)
+				{
+					debug.put("tasks_missing_start",debug.get("tasks_missing_start") + 1);
+					continue;
+				}
+				if(start_ms >= now_ms)
+				{
+					continue;
+				}
+
+				debug.put("open_started_tasks_seen",debug.get("open_started_tasks_seen") + 1);
+
+				task_touch_ms = 0;
+				if(task.containsKey("last_updated_time_long"))
+				{
+					try
+					{
+						task_touch_ms = ifnull(task.get("last_updated_time_long"),"0").toString().toLong();
+					}
+					catch (ignore_task_touch_1)
+					{
+						task_touch_ms = 0;
+					}
+				}
+				if(task_touch_ms == 0 && task.containsKey("updated_time_long"))
+				{
+					try
+					{
+						task_touch_ms = ifnull(task.get("updated_time_long"),"0").toString().toLong();
+					}
+					catch (ignore_task_touch_2)
+					{
+						task_touch_ms = 0;
+					}
+				}
+				if(task_touch_ms == 0 && task.containsKey("created_time_long"))
+				{
+					try
+					{
+						task_touch_ms = ifnull(task.get("created_time_long"),"0").toString().toLong();
+					}
+					catch (ignore_task_touch_3)
+					{
+						task_touch_ms = 0;
+					}
+				}
+				if(task_touch_ms > 0 && task_touch_ms.toString().length() <= 10)
+				{
+					task_touch_ms = task_touch_ms * 1000;
+				}
+				if(task_touch_ms == 0)
+				{
+					task_touch_text = ifnull(task.get("last_updated_time"),"").toString();
+					if(task_touch_text == "")
+					{
+						task_touch_text = ifnull(task.get("updated_time"),"").toString();
+					}
+					if(task_touch_text == "")
+					{
+						task_touch_text = ifnull(task.get("created_time"),"").toString();
+					}
+					if(task_touch_text != "")
+					{
+						try
+						{
+							task_touch_ms = task_touch_text.toDateTime().toLong();
+						}
+						catch (ignore_task_touch_dt_1)
+						{
+							try
+							{
+								task_touch_ms = task_touch_text.toDate("MM-dd-yyyy").toDateTime().toLong();
+							}
+							catch (ignore_task_touch_dt_2)
+							{
+								try
+								{
+									task_touch_ms = task_touch_text.toDate().toDateTime().toLong();
+								}
+								catch (ignore_task_touch_dt_3)
+								{
+									task_touch_ms = 0;
+								}
+							}
+						}
+					}
+				}
+				if(task_touch_ms == 0)
+				{
+					debug.put("tasks_missing_touch",debug.get("tasks_missing_touch") + 1);
+					continue;
+				}
+
+				if(task_touch_ms <= now_minus_7d_ms)
+				{
+					stale_started_open_tasks = stale_started_open_tasks + 1;
+					debug.put("stale_tasks_found",debug.get("stale_tasks_found") + 1);
+
+					task_id = ifnull(task.get("id_string"),"").toString();
+					if(task_id == "")
+					{
+						task_id = ifnull(task.get("id"),"").toString();
+					}
+
+					ref = Map();
+					ref.put("project_id",project_id);
+					ref.put("project_name",project_name);
+					ref.put("owner",project_owner);
+					ref.put("task_id",task_id);
+					ref.put("task_name",ifnull(task.get("name"),"").toString());
+					ref.put("task_key",ifnull(task.get("key"),"").toString());
+					ref.put("start_date",ifnull(task.get("start_date"),"").toString());
+					ref.put("last_updated_time",ifnull(task.get("last_updated_time"),"").toString());
+					ref.put("status",status_lc);
+					stale_task_refs.add(ref);
+				}
+			}
+
+			if(page_tasks.isEmpty() || page_tasks.size() < page_size)
+			{
+				continue_paging = false;
+			}
+
+			page_no = page_no + 1;
+		}
+
+		if(stale_started_open_tasks > 0)
+		{
+			debug.put("projects_with_stale_tasks",debug.get("projects_with_stale_tasks") + 1);
+
+			item = Map();
+			item.put("project_id",project_id);
+			item.put("project_name",project_name);
+			item.put("owner",project_owner);
+			item.put("stale_started_open_tasks",stale_started_open_tasks);
+			projects_with_stale_started_open_tasks.add(item);
+		}
+	}
+
+	result.put("projects_with_stale_started_open_tasks",projects_with_stale_started_open_tasks);
+	result.put("stale_task_refs",stale_task_refs);
+	result.put("api_errors",api_errors);
+	result.put("debug",debug);
+	return result;
+}

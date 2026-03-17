@@ -1,0 +1,129 @@
+map buildProjectViewStaleTaskDetails(string portal_id, string dc_base, list stale_task_refs)
+{
+	result = Map();
+	api_errors = List();
+	stale_task_details = List();
+
+	if(portal_id == null)
+	{
+		portal_id = "";
+	}
+	if(dc_base == null)
+	{
+		dc_base = "";
+	}
+	if(stale_task_refs == null)
+	{
+		stale_task_refs = List();
+	}
+
+	portal_id = portal_id.toString().trim();
+	dc_base = dc_base.toString().trim();
+
+	if(portal_id == "" || dc_base == "")
+	{
+		err_cfg = Map();
+		err_cfg.put("stage","config");
+		err_cfg.put("message","Missing required inputs: portal_id and dc_base");
+		api_errors.add(err_cfg);
+		result.put("stale_task_details",stale_task_details);
+		result.put("api_errors",api_errors);
+		return result;
+	}
+
+	projects_base_url = dc_base + "/portal/" + portal_id + "/projects/";
+
+	for each  ref in stale_task_refs
+	{
+		if(ref == null)
+		{
+			continue;
+		}
+
+		project_id = ifnull(ref.get("project_id"),"").toString();
+		task_id = ifnull(ref.get("task_id"),"").toString();
+
+		if(project_id == "" || task_id == "")
+		{
+			err_ref = Map();
+			err_ref.put("stage","input_ref");
+			err_ref.put("project_id",project_id);
+			err_ref.put("task_id",task_id);
+			err_ref.put("message","Missing project_id or task_id in stale_task_refs item");
+			api_errors.add(err_ref);
+			continue;
+		}
+
+		try
+		{
+			task_resp = invokeurl
+			[
+				url :projects_base_url + project_id + "/tasks/" + task_id + "/"
+				type :GET
+				connection:"zoho_project_connection"
+			];
+
+			try
+			{
+				if(task_resp != null && task_resp.toString().trim() != "")
+				{
+					if(task_resp.containsKey("tasks") && task_resp.get("tasks") != null && task_resp.get("tasks").size() > 0)
+					{
+						task_detail = task_resp.get("tasks").get(0);
+
+						item = Map();
+						item.put("project_id",project_id);
+						item.put("project_name",ifnull(ref.get("project_name"),"").toString());
+						item.put("owner",ifnull(ref.get("owner"),"").toString());
+						item.put("task_id",task_id);
+						item.put("task_name",ifnull(ref.get("task_name"),"").toString());
+						item.put("task_key",ifnull(ref.get("task_key"),"").toString());
+						item.put("task_detail",task_detail);
+
+						stale_task_details.add(item);
+					}
+					else
+					{
+						err_td = Map();
+						err_td.put("stage","task_detail_parse");
+						err_td.put("project_id",project_id);
+						err_td.put("task_id",task_id);
+						err_td.put("message","Task detail response did not contain tasks[0]");
+						api_errors.add(err_td);
+					}
+				}
+				else
+				{
+					err_te = Map();
+					err_te.put("stage","task_detail_empty");
+					err_te.put("project_id",project_id);
+					err_te.put("task_id",task_id);
+					err_te.put("message","Empty task detail response");
+					api_errors.add(err_te);
+				}
+			}
+			catch (task_parse_err)
+			{
+				err_tp = Map();
+				err_tp.put("stage","task_detail_parse");
+				err_tp.put("project_id",project_id);
+				err_tp.put("task_id",task_id);
+				err_tp.put("message",task_parse_err.toString());
+				api_errors.add(err_tp);
+			}
+		}
+		catch (task_fetch_err)
+		{
+			err_tf = Map();
+			err_tf.put("stage","task_detail_fetch");
+			err_tf.put("project_id",project_id);
+			err_tf.put("task_id",task_id);
+			err_tf.put("message",task_fetch_err.toString());
+			api_errors.add(err_tf);
+		}
+	}
+
+	result.put("stale_task_details",stale_task_details);
+	result.put("api_errors",api_errors);
+	return result;
+}
